@@ -1,0 +1,151 @@
+# Run medaka and sniffles to look at small and large variants
+medaka_variant \
+    -i ../../barcode09.sorted.aligned.bam \
+    -r ../../combined_refs.fasta \
+    -o medaka_small_variants \
+    -m r1041_e82_400bps_hac_variant_v4.3.0 \
+    -t 4 
+sniffles \
+    --input ../../barcode09.sorted.aligned.bam \
+    --vcf sniffles_structural_variants.vcf \
+    --reference ../../combined_refs.fasta \
+    --minsvlen 50 \
+    --minsupport 3 \
+    --threads 4
+    
+# Get a summary for one barcode
+# Compress and index the VCF files
+bgzip -c medaka_small_variants/medaka.annotated.vcf > medaka_small.vcf.gz
+tabix -p vcf medaka_small.vcf.gz
+
+bgzip -c sniffles_structural_variants.vcf > sniffles_sv.vcf.gz
+tabix -p vcf sniffles_sv.vcf.gz
+
+# Combine both types of variants
+bcftools concat \
+    medaka_small.vcf.gz \
+    sniffles_sv.vcf.gz \
+    -a -D -o barcode09_all_variants.vcf
+
+# Generate statistics
+bcftools stats barcode09_all_variants.vcf > barcode09_variant_stats.txt
+
+# Get a quick summary
+echo "=== Barcode09 Variant Summary ==="
+echo ""
+echo "Total variants found:"
+grep -v "^#" barcode09_all_variants.vcf | wc -l
+echo ""
+echo "Small variants (SNPs and small indels) from Medaka:"
+grep -v "^#" medaka_small_variants/medaka.annotated.vcf | wc -l
+echo ""
+echo "Structural variants from Sniffles:"
+grep -v "^#" sniffles_structural_variants.vcf | wc -l
+echo ""
+echo "Structural variant types:"
+grep "SVTYPE=" sniffles_structural_variants.vcf | grep -v "^#" | cut -f8 | grep -o "SVTYPE=[^;]*" | sort | uniq -c
+
+# Go back to the main variant_calling_results directory
+cd ..
+
+# Create the processing script
+nano process_all_barcodes.sh
+
+# Paste this into the file
+#!/bin/bash
+
+# List of barcodes to process
+barcodes="barcode10 barcode11 barcode12 barcode13 barcode14 barcode15 barcode16"
+
+# Reference genome
+REF="../../combined_refs.fasta"
+
+# Medaka model
+MODEL="r1041_e82_400bps_hac_variant_v4.3.0"
+
+echo "Processing all barcodes..."
+echo "================================"
+
+# Process each barcode
+for barcode in $barcodes; do
+    echo ""
+    echo "Starting $barcode..."
+    
+    # Create directory
+    mkdir -p ${barcode}_variants
+    cd ${barcode}_variants
+    
+    # Small variants with Medaka
+    echo "  [1/5] Running medaka for small variants..."
+    medaka_variant \
+        -i ../../${barcode}.sorted.aligned.bam \
+        -r $REF \
+        -o medaka_small_variants \
+        -m $MODEL \
+        -t 4
+    
+    # Structural variants with Sniffles
+    echo "  [2/5] Running sniffles for structural variants..."
+    sniffles \
+        --input ../../${barcode}.sorted.aligned.bam \
+        --vcf sniffles_structural_variants.vcf \
+        --reference $REF \
+        --minsvlen 50 \
+        --minsupport 3 \
+        --threads 4
+    
+    # Compress and index
+    echo "  [3/5] Compressing VCF files..."
+    bgzip -c medaka_small_variants/medaka.annotated.vcf > medaka_small.vcf.gz
+    tabix -p vcf medaka_small.vcf.gz
+    bgzip -c sniffles_structural_variants.vcf > sniffles_sv.vcf.gz
+    tabix -p vcf sniffles_sv.vcf.gz
+    
+    # Combine variants
+    echo "  [4/5] Combining variants..."
+    bcftools concat \
+        medaka_small.vcf.gz \
+        sniffles_sv.vcf.gz \
+        -a -D -o ${barcode}_all_variants.vcf
+    
+    # Generate stats
+    echo "  [5/5] Generating statistics..."
+    bcftools stats ${barcode}_all_variants.vcf > ${barcode}_variant_stats.txt
+    
+    # Quick summary
+    echo ""
+    echo "  === $barcode Summary ==="
+    echo "  Total variants: $(grep -v "^#" ${barcode}_all_variants.vcf | wc -l)"
+    echo "  Small variants: $(grep -v "^#" medaka_small_variants/medaka.annotated.vcf | wc -l)"
+    echo "  Structural variants: $(grep -v "^#" sniffles_structural_variants.vcf | wc -l)"
+    
+    cd ..
+    echo "  $barcode complete!"
+done
+
+echo ""
+echo "================================"
+echo "All barcodes processed!"
+echo ""
+echo "Creating combined summary..."
+
+# Create a summary file for all barcodes
+echo "Barcode,Total_Variants,Small_Variants,Structural_Variants" > all_barcodes_summary.csv
+for barcode in barcode09 $barcodes; do
+    total=$(grep -v "^#" ${barcode}_variants/${barcode}_all_variants.vcf 2>/dev/null | wc -l)
+    small=$(grep -v "^#" ${barcode}_variants/medaka_small_variants/medaka.annotated.vcf 2>/dev/null | wc -l)
+    sv=$(grep -v "^#" ${barcode}_variants/sniffles_structural_variants.vcf 2>/dev/null | wc -l)
+    echo "$barcode,$total,$small,$sv" >> all_barcodes_summary.csv
+done
+
+echo "Summary saved to: all_barcodes_summary.csv"
+cat all_barcodes_summary.csv
+# Save and exit (Ctrl+X, then Y, then Enter).
+
+# Run the script!
+# Make it executable
+chmod +x process_all_barcodes.sh
+
+# Run it (this will take 1-2 hours for all 7 remaining barcodes)
+./process_all_barcodes.sh
+
